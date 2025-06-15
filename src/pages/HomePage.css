@@ -1,0 +1,28 @@
+.home-container {
+  text-align: center;
+  padding: 40px;
+  background-color: #e8f5e9;
+  min-height: 100vh;
+}
+
+.logo-image {
+  width: 180px;
+  height: auto;
+  margin-bottom: 20px;
+}
+
+.nav-button {
+  display: inline-block;
+  margin: 10px;
+  padding: 12px 25px;
+  background-color: #2e7d32;
+  color: white;
+  text-decoration: none;
+  border-radius: 20px;
+  font-weight: bold;
+  transition: background-color 0.3s ease;
+}
+
+.nav-button:hover {
+  background-color: #1b5e20;
+}

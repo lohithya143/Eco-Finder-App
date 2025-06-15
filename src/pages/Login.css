@@ -1,0 +1,99 @@
+/* src/pages/LoginPage.css */
+.login-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 100vh;
+  background: linear-gradient(135deg, #03a1a1, #f2f2f3);
+  font-family: Arial, sans-serif;
+}
+
+.login-card {
+  display: flex;
+  width: 800px;
+  height: 450px;
+  background-color: #1e1e2f;
+  border-radius: 15px;
+  box-shadow: 0 0 30px rgba(0, 0, 0, 0.3);
+  overflow: hidden;
+}
+
+.login-left {
+  flex: 1;
+  background-color: #2a2a3f;
+  padding: 40px 30px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.logo-circle {
+  width: 150px;
+  height: 150px;
+  margin-bottom: 30px;
+  background: #333;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.logo {
+  width: 140px;
+  height: 140px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.login-left input {
+  width: 100%;
+  margin: 10px 0;
+  padding: 12px;
+  background: #1e1e2f;
+  border: 1px solid #555;
+  border-radius: 8px;
+  color: white;
+}
+
+.login-left button {
+  margin-top: 15px;
+  width: 100%;
+  padding: 12px;
+  background-color: #ff3cac;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 16px;
+  cursor: pointer;
+}
+
+.signup-text {
+  margin-top: 15px;
+  color: #aaa;
+  font-size: 13px;
+}
+
+.signup-text a {
+  color: #5d9eff;
+  text-decoration: underline;
+}
+
+.login-right {
+  flex: 1;
+  background: radial-gradient(circle, #5d0cff, #2b0b6e);
+  color: white;
+  padding: 60px 30px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.login-right h1 {
+  font-size: 36px;
+  margin-bottom: 15px;
+}
+
+.login-right p {
+  font-size: 16px;
+}

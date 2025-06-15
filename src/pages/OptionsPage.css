@@ -1,0 +1,28 @@
+.options-container {
+  text-align: center;
+  padding: 40px;
+  font-family: 'Segoe UI', sans-serif;
+}
+
+.career-image {
+  width: 100%;
+  max-width: 500px;
+  margin: 20px 0;
+  border-radius: 15px;
+}
+
+.options-buttons button {
+  margin: 10px;
+  padding: 12px 24px;
+  font-size: 16px;
+  background-color: #4CAF50;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+}
+
+.options-buttons {
+  margin-top: 20px;
+}

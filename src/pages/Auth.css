@@ -1,0 +1,32 @@
+.auth-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  background-color: #f0f8f0; /* Eco-friendly soft green background */
+}
+
+.auth-image img {
+  max-width: 350px;
+  margin-bottom: 30px;
+}
+
+.auth-buttons {
+  text-align: center;
+}
+
+.auth-btn {
+  background-color: #4caf50;
+  color: white;
+  padding: 12px 24px;
+  margin: 10px;
+  border: none;
+  border-radius: 6px;
+  font-size: 16px;
+  cursor: pointer;
+}
+
+.auth-btn:hover {
+  background-color: #45a049;
+}

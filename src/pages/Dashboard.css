@@ -1,0 +1,38 @@
+/* src/pages/Dashboard.css */
+.dashboard-container {
+  text-align: center;
+  padding: 2rem;
+  background-color: #d1e9f4; /* Light blue background */
+  min-height: 100vh;
+  font-family: Arial, sans-serif;
+}
+
+.dashboard-logo {
+  width: 450px;
+  height: 450px;
+  object-fit: contain;
+  margin-bottom: 1rem;
+}
+
+.dashboard-options {
+  display: flex;
+  justify-content: center;
+  gap: 1rem;
+  margin-top: 2rem;
+  flex-wrap: wrap;
+}
+
+.dashboard-card {
+  padding: 1rem 2rem;
+  background-color: hsl(188, 78%, 78%);
+  border: 2px solid #a1bbc7;
+  border-radius: 8px;
+  color: #078bd8;
+  font-weight: bold;
+  cursor: pointer;
+  transition: 0.3s;
+}
+
+.dashboard-card:hover {
+  background-color: #b3e5fc;
+}
