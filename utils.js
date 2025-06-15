@@ -1,1196 +1,1057 @@
-"use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.kDispose = exports.randomBytes = exports.COSMOS_DB_MSG = exports.DOCUMENT_DB_MSG = exports.COSMOS_DB_CHECK = exports.DOCUMENT_DB_CHECK = exports.MONGODB_WARNING_CODE = exports.DEFAULT_PK_FACTORY = exports.HostAddress = exports.BufferPool = exports.List = exports.MongoDBCollectionNamespace = exports.MongoDBNamespace = exports.ByteUtils = void 0;
-exports.isUint8Array = isUint8Array;
-exports.hostMatchesWildcards = hostMatchesWildcards;
-exports.normalizeHintField = normalizeHintField;
+'use strict';
+
+/*!
+ * Module dependencies.
+ */
+
+const UUID = require('bson').UUID;
+const ms = require('ms');
+const mpath = require('mpath');
+const ObjectId = require('./types/objectid');
+const PopulateOptions = require('./options/populateOptions');
+const clone = require('./helpers/clone');
+const immediate = require('./helpers/immediate');
+const isObject = require('./helpers/isObject');
+const isMongooseArray = require('./types/array/isMongooseArray');
+const isMongooseDocumentArray = require('./types/documentArray/isMongooseDocumentArray');
+const isBsonType = require('./helpers/isBsonType');
+const isPOJO = require('./helpers/isPOJO');
+const getFunctionName = require('./helpers/getFunctionName');
+const isMongooseObject = require('./helpers/isMongooseObject');
+const promiseOrCallback = require('./helpers/promiseOrCallback');
+const schemaMerge = require('./helpers/schema/merge');
+const specialProperties = require('./helpers/specialProperties');
+const { trustedSymbol } = require('./helpers/query/trusted');
+
+let Document;
+
+exports.specialProperties = specialProperties;
+
+exports.isMongooseArray = isMongooseArray.isMongooseArray;
+exports.isMongooseDocumentArray = isMongooseDocumentArray.isMongooseDocumentArray;
+exports.registerMongooseArray = isMongooseArray.registerMongooseArray;
+exports.registerMongooseDocumentArray = isMongooseDocumentArray.registerMongooseDocumentArray;
+
+const oneSpaceRE = /\s/;
+const manySpaceRE = /\s+/;
+
+/**
+ * Produces a collection name from model `name`. By default, just returns
+ * the model name
+ *
+ * @param {String} name a model name
+ * @param {Function} pluralize function that pluralizes the collection name
+ * @return {String} a collection name
+ * @api private
+ */
+
+exports.toCollectionName = function(name, pluralize) {
+  if (name === 'system.profile') {
+    return name;
+  }
+  if (name === 'system.indexes') {
+    return name;
+  }
+  if (typeof pluralize === 'function') {
+    if (typeof name !== 'string') {
+      throw new TypeError('Collection name must be a string');
+    }
+    if (name.length === 0) {
+      throw new TypeError('Collection name cannot be empty');
+    }
+    return pluralize(name);
+  }
+  return name;
+};
+
+/**
+ * Determines if `a` and `b` are deep equal.
+ *
+ * Modified from node/lib/assert.js
+ *
+ * @param {any} a a value to compare to `b`
+ * @param {any} b a value to compare to `a`
+ * @return {Boolean}
+ * @api private
+ */
+
+exports.deepEqual = function deepEqual(a, b) {
+  if (a === b) {
+    return true;
+  }
+
+  if (typeof a !== 'object' || typeof b !== 'object') {
+    return a === b;
+  }
+
+  if (a instanceof Date && b instanceof Date) {
+    return a.getTime() === b.getTime();
+  }
+
+  if ((isBsonType(a, 'ObjectId') && isBsonType(b, 'ObjectId')) ||
+      (isBsonType(a, 'Decimal128') && isBsonType(b, 'Decimal128'))) {
+    return a.toString() === b.toString();
+  }
+
+  if (a instanceof RegExp && b instanceof RegExp) {
+    return a.source === b.source &&
+        a.ignoreCase === b.ignoreCase &&
+        a.multiline === b.multiline &&
+        a.global === b.global &&
+        a.dotAll === b.dotAll &&
+        a.unicode === b.unicode &&
+        a.sticky === b.sticky &&
+        a.hasIndices === b.hasIndices;
+  }
+
+  if (a == null || b == null) {
+    return false;
+  }
+
+  if (a.prototype !== b.prototype) {
+    return false;
+  }
+
+  if (a instanceof Map || b instanceof Map) {
+    if (!(a instanceof Map) || !(b instanceof Map)) {
+      return false;
+    }
+    return deepEqual(Array.from(a.keys()), Array.from(b.keys())) &&
+      deepEqual(Array.from(a.values()), Array.from(b.values()));
+  }
+
+  // Handle MongooseNumbers
+  if (a instanceof Number && b instanceof Number) {
+    return a.valueOf() === b.valueOf();
+  }
+
+  if (Buffer.isBuffer(a)) {
+    return exports.buffer.areEqual(a, b);
+  }
+
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b)) {
+      return false;
+    }
+    const len = a.length;
+    if (len !== b.length) {
+      return false;
+    }
+    for (let i = 0; i < len; ++i) {
+      if (!deepEqual(a[i], b[i])) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  if (a.$__ != null) {
+    a = a._doc;
+  } else if (isMongooseObject(a)) {
+    a = a.toObject();
+  }
+
+  if (b.$__ != null) {
+    b = b._doc;
+  } else if (isMongooseObject(b)) {
+    b = b.toObject();
+  }
+
+  const ka = Object.keys(a);
+  const kb = Object.keys(b);
+  const kaLength = ka.length;
+
+  // having the same number of owned properties (keys incorporates
+  // hasOwnProperty)
+  if (kaLength !== kb.length) {
+    return false;
+  }
+
+  // ~~~cheap key test
+  for (let i = kaLength - 1; i >= 0; i--) {
+    if (ka[i] !== kb[i]) {
+      return false;
+    }
+  }
+
+  // equivalent values for every corresponding key, and
+  // ~~~possibly expensive deep test
+  for (const key of ka) {
+    if (!deepEqual(a[key], b[key])) {
+      return false;
+    }
+  }
+
+  return true;
+};
+
+/**
+ * Get the last element of an array
+ * @param {Array} arr
+ */
+
+exports.last = function(arr) {
+  if (arr.length > 0) {
+    return arr[arr.length - 1];
+  }
+  return void 0;
+};
+
+/*!
+ * ignore
+ */
+
+exports.promiseOrCallback = promiseOrCallback;
+
+/*!
+ * ignore
+ */
+
+exports.cloneArrays = function cloneArrays(arr) {
+  if (!Array.isArray(arr)) {
+    return arr;
+  }
+
+  return arr.map(el => exports.cloneArrays(el));
+};
+
+/*!
+ * ignore
+ */
+
+exports.omit = function omit(obj, keys) {
+  if (keys == null) {
+    return Object.assign({}, obj);
+  }
+  if (!Array.isArray(keys)) {
+    keys = [keys];
+  }
+
+  const ret = Object.assign({}, obj);
+  for (const key of keys) {
+    delete ret[key];
+  }
+  return ret;
+};
+
+/**
+ * Simplified version of `clone()` that only clones POJOs and arrays. Skips documents, dates, objectids, etc.
+ * @param {*} val
+ * @returns
+*/
+
+exports.clonePOJOsAndArrays = function clonePOJOsAndArrays(val) {
+  if (val == null) {
+    return val;
+  }
+  // Skip documents because we assume they'll be cloned later. See gh-15312 for how documents are handled with `merge()`.
+  if (val.$__ != null) {
+    return val;
+  }
+  if (isPOJO(val)) {
+    val = { ...val };
+    for (const key of Object.keys(val)) {
+      val[key] = exports.clonePOJOsAndArrays(val[key]);
+    }
+    return val;
+  }
+  if (Array.isArray(val)) {
+    val = [...val];
+    for (let i = 0; i < val.length; ++i) {
+      val[i] = exports.clonePOJOsAndArrays(val[i]);
+    }
+    return val;
+  }
+
+  return val;
+};
+
+/**
+ * Merges `from` into `to` without overwriting existing properties.
+ *
+ * @param {Object} to
+ * @param {Object} from
+ * @param {Object} [options]
+ * @param {String} [path]
+ * @api private
+ */
+
+exports.merge = function merge(to, from, options, path) {
+  options = options || {};
+
+  const keys = Object.keys(from);
+  let i = 0;
+  const len = keys.length;
+  let key;
+
+  if (from[trustedSymbol]) {
+    to[trustedSymbol] = from[trustedSymbol];
+  }
+
+  path = path || '';
+  const omitNested = options.omitNested || {};
+
+  while (i < len) {
+    key = keys[i++];
+    if (options.omit && options.omit[key]) {
+      continue;
+    }
+    if (omitNested[path]) {
+      continue;
+    }
+    if (specialProperties.has(key)) {
+      continue;
+    }
+    if (to[key] == null) {
+      to[key] = exports.clonePOJOsAndArrays(from[key]);
+    } else if (exports.isObject(from[key])) {
+      if (!exports.isObject(to[key])) {
+        to[key] = {};
+      }
+      if (from[key] != null) {
+        // Skip merging schemas if we're creating a discriminator schema and
+        // base schema has a given path as a single nested but discriminator schema
+        // has the path as a document array, or vice versa (gh-9534)
+        if (options.isDiscriminatorSchemaMerge &&
+            (from[key].$isSingleNested && to[key].$isMongooseDocumentArray) ||
+            (from[key].$isMongooseDocumentArray && to[key].$isSingleNested)) {
+          continue;
+        } else if (from[key].instanceOfSchema) {
+          if (to[key].instanceOfSchema) {
+            schemaMerge(to[key], from[key].clone(), options.isDiscriminatorSchemaMerge);
+          } else {
+            to[key] = from[key].clone();
+          }
+          continue;
+        } else if (isBsonType(from[key], 'ObjectId')) {
+          to[key] = new ObjectId(from[key]);
+          continue;
+        }
+      }
+      merge(to[key], from[key], options, path ? path + '.' + key : key);
+    } else if (options.overwrite) {
+      to[key] = from[key];
+    }
+  }
+
+  return to;
+};
+
+/**
+ * Applies toObject recursively.
+ *
+ * @param {Document|Array|Object} obj
+ * @return {Object}
+ * @api private
+ */
+
+exports.toObject = function toObject(obj) {
+  Document || (Document = require('./document'));
+  let ret;
+
+  if (obj == null) {
+    return obj;
+  }
+
+  if (obj instanceof Document) {
+    return obj.toObject();
+  }
+
+  if (Array.isArray(obj)) {
+    ret = [];
+
+    for (const doc of obj) {
+      ret.push(toObject(doc));
+    }
+
+    return ret;
+  }
+
+  if (exports.isPOJO(obj)) {
+    ret = {};
+
+    if (obj[trustedSymbol]) {
+      ret[trustedSymbol] = obj[trustedSymbol];
+    }
+
+    for (const k of Object.keys(obj)) {
+      if (specialProperties.has(k)) {
+        continue;
+      }
+      ret[k] = toObject(obj[k]);
+    }
+
+    return ret;
+  }
+
+  return obj;
+};
+
 exports.isObject = isObject;
-exports.mergeOptions = mergeOptions;
-exports.filterOptions = filterOptions;
-exports.applyRetryableWrites = applyRetryableWrites;
-exports.isPromiseLike = isPromiseLike;
-exports.decorateWithCollation = decorateWithCollation;
-exports.decorateWithReadConcern = decorateWithReadConcern;
-exports.getTopology = getTopology;
-exports.ns = ns;
-exports.makeCounter = makeCounter;
-exports.uuidV4 = uuidV4;
-exports.maxWireVersion = maxWireVersion;
-exports.arrayStrictEqual = arrayStrictEqual;
-exports.errorStrictEqual = errorStrictEqual;
-exports.makeStateMachine = makeStateMachine;
-exports.now = now;
-exports.calculateDurationInMs = calculateDurationInMs;
-exports.hasAtomicOperators = hasAtomicOperators;
-exports.resolveTimeoutOptions = resolveTimeoutOptions;
-exports.resolveOptions = resolveOptions;
-exports.isSuperset = isSuperset;
-exports.isHello = isHello;
-exports.setDifference = setDifference;
-exports.isRecord = isRecord;
-exports.emitWarning = emitWarning;
-exports.emitWarningOnce = emitWarningOnce;
-exports.enumToString = enumToString;
-exports.supportsRetryableWrites = supportsRetryableWrites;
-exports.shuffle = shuffle;
-exports.commandSupportsReadConcern = commandSupportsReadConcern;
-exports.compareObjectId = compareObjectId;
-exports.parseInteger = parseInteger;
-exports.parseUnsignedInteger = parseUnsignedInteger;
-exports.checkParentDomainMatch = checkParentDomainMatch;
-exports.get = get;
-exports.request = request;
-exports.isHostMatch = isHostMatch;
-exports.promiseWithResolvers = promiseWithResolvers;
-exports.squashError = squashError;
-exports.once = once;
-exports.maybeAddIdToDocuments = maybeAddIdToDocuments;
-exports.fileIsAccessible = fileIsAccessible;
-exports.csotMin = csotMin;
-exports.noop = noop;
-exports.decorateDecryptionResult = decorateDecryptionResult;
-exports.addAbortListener = addAbortListener;
-exports.abortable = abortable;
-const crypto = require("crypto");
-const fs_1 = require("fs");
-const http = require("http");
-const timers_1 = require("timers");
-const url = require("url");
-const url_1 = require("url");
-const util_1 = require("util");
-const bson_1 = require("./bson");
-const constants_1 = require("./cmap/wire_protocol/constants");
-const constants_2 = require("./constants");
-const error_1 = require("./error");
-const read_concern_1 = require("./read_concern");
-const read_preference_1 = require("./read_preference");
-const common_1 = require("./sdam/common");
-const write_concern_1 = require("./write_concern");
-exports.ByteUtils = {
-    toLocalBufferType(buffer) {
-        return Buffer.isBuffer(buffer)
-            ? buffer
-            : Buffer.from(buffer.buffer, buffer.byteOffset, buffer.byteLength);
-    },
-    equals(seqA, seqB) {
-        return exports.ByteUtils.toLocalBufferType(seqA).equals(seqB);
-    },
-    compare(seqA, seqB) {
-        return exports.ByteUtils.toLocalBufferType(seqA).compare(seqB);
-    },
-    toBase64(uint8array) {
-        return exports.ByteUtils.toLocalBufferType(uint8array).toString('base64');
-    }
+
+/**
+ * Determines if `arg` is a plain old JavaScript object (POJO). Specifically,
+ * `arg` must be an object but not an instance of any special class, like String,
+ * ObjectId, etc.
+ *
+ * `Object.getPrototypeOf()` is part of ES5: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Object/getPrototypeOf
+ *
+ * @param {Object|Array|String|Function|RegExp|any} arg
+ * @api private
+ * @return {Boolean}
+ */
+
+exports.isPOJO = require('./helpers/isPOJO');
+
+/**
+ * Determines if `arg` is an object that isn't an instance of a built-in value
+ * class, like Array, Buffer, ObjectId, etc.
+ * @param {Any} val
+ */
+
+exports.isNonBuiltinObject = function isNonBuiltinObject(val) {
+  return typeof val === 'object' &&
+    !exports.isNativeObject(val) &&
+    !exports.isMongooseType(val) &&
+    !(val instanceof UUID) &&
+    val != null;
 };
+
 /**
- * Returns true if value is a Uint8Array or a Buffer
- * @param value - any value that may be a Uint8Array
+ * Determines if `obj` is a built-in object like an array, date, boolean,
+ * etc.
+ * @param {Any} arg
  */
-function isUint8Array(value) {
-    return (value != null &&
-        typeof value === 'object' &&
-        Symbol.toStringTag in value &&
-        value[Symbol.toStringTag] === 'Uint8Array');
-}
-/**
- * Determines if a connection's address matches a user provided list
- * of domain wildcards.
- */
-function hostMatchesWildcards(host, wildcards) {
-    for (const wildcard of wildcards) {
-        if (host === wildcard ||
-            (wildcard.startsWith('*.') && host?.endsWith(wildcard.substring(2, wildcard.length))) ||
-            (wildcard.startsWith('*/') && host?.endsWith(wildcard.substring(2, wildcard.length)))) {
-            return true;
-        }
-    }
-    return false;
-}
-/**
- * Ensure Hint field is in a shape we expect:
- * - object of index names mapping to 1 or -1
- * - just an index name
- * @internal
- */
-function normalizeHintField(hint) {
-    let finalHint = undefined;
-    if (typeof hint === 'string') {
-        finalHint = hint;
-    }
-    else if (Array.isArray(hint)) {
-        finalHint = {};
-        hint.forEach(param => {
-            finalHint[param] = 1;
-        });
-    }
-    else if (hint != null && typeof hint === 'object') {
-        finalHint = {};
-        for (const name in hint) {
-            finalHint[name] = hint[name];
-        }
-    }
-    return finalHint;
-}
-const TO_STRING = (object) => Object.prototype.toString.call(object);
-/**
- * Checks if arg is an Object:
- * - **NOTE**: the check is based on the `[Symbol.toStringTag]() === 'Object'`
- * @internal
- */
-function isObject(arg) {
-    return '[object Object]' === TO_STRING(arg);
-}
-/** @internal */
-function mergeOptions(target, source) {
-    return { ...target, ...source };
-}
-/** @internal */
-function filterOptions(options, names) {
-    const filterOptions = {};
-    for (const name in options) {
-        if (names.includes(name)) {
-            filterOptions[name] = options[name];
-        }
-    }
-    // Filtered options
-    return filterOptions;
-}
-/**
- * Applies retryWrites: true to a command if retryWrites is set on the command's database.
- * @internal
- *
- * @param target - The target command to which we will apply retryWrites.
- * @param db - The database from which we can inherit a retryWrites value.
- */
-function applyRetryableWrites(target, db) {
-    if (db && db.s.options?.retryWrites) {
-        target.retryWrites = true;
-    }
-    return target;
-}
-/**
- * Applies a write concern to a command based on well defined inheritance rules, optionally
- * detecting support for the write concern in the first place.
- * @internal
- *
- * @param target - the target command we will be applying the write concern to
- * @param sources - sources where we can inherit default write concerns from
- * @param options - optional settings passed into a command for write concern overrides
- */
-/**
- * Checks if a given value is a Promise
- *
- * @typeParam T - The resolution type of the possible promise
- * @param value - An object that could be a promise
- * @returns true if the provided value is a Promise
- */
-function isPromiseLike(value) {
-    return (value != null &&
-        typeof value === 'object' &&
-        'then' in value &&
-        typeof value.then === 'function');
-}
-/**
- * Applies collation to a given command.
- * @internal
- *
- * @param command - the command on which to apply collation
- * @param target - target of command
- * @param options - options containing collation settings
- */
-function decorateWithCollation(command, target, options) {
-    const capabilities = getTopology(target).capabilities;
-    if (options.collation && typeof options.collation === 'object') {
-        if (capabilities && capabilities.commandsTakeCollation) {
-            command.collation = options.collation;
-        }
-        else {
-            throw new error_1.MongoCompatibilityError(`Current topology does not support collation`);
-        }
-    }
-}
-/**
- * Applies a read concern to a given command.
- * @internal
- *
- * @param command - the command on which to apply the read concern
- * @param coll - the parent collection of the operation calling this method
- */
-function decorateWithReadConcern(command, coll, options) {
-    if (options && options.session && options.session.inTransaction()) {
-        return;
-    }
-    const readConcern = Object.assign({}, command.readConcern || {});
-    if (coll.s.readConcern) {
-        Object.assign(readConcern, coll.s.readConcern);
-    }
-    if (Object.keys(readConcern).length > 0) {
-        Object.assign(command, { readConcern: readConcern });
-    }
-}
-/**
- * A helper function to get the topology from a given provider. Throws
- * if the topology cannot be found.
- * @throws MongoNotConnectedError
- * @internal
- */
-function getTopology(provider) {
-    // MongoClient or ClientSession or AbstractCursor
-    if ('topology' in provider && provider.topology) {
-        return provider.topology;
-    }
-    else if ('client' in provider && provider.client.topology) {
-        return provider.client.topology;
-    }
-    throw new error_1.MongoNotConnectedError('MongoClient must be connected to perform this operation');
-}
-/** @internal */
-function ns(ns) {
-    return MongoDBNamespace.fromString(ns);
-}
-/** @public */
-class MongoDBNamespace {
-    /**
-     * Create a namespace object
-     *
-     * @param db - database name
-     * @param collection - collection name
-     */
-    constructor(db, collection) {
-        this.db = db;
-        this.collection = collection;
-        this.collection = collection === '' ? undefined : collection;
-    }
-    toString() {
-        return this.collection ? `${this.db}.${this.collection}` : this.db;
-    }
-    withCollection(collection) {
-        return new MongoDBCollectionNamespace(this.db, collection);
-    }
-    static fromString(namespace) {
-        if (typeof namespace !== 'string' || namespace === '') {
-            // TODO(NODE-3483): Replace with MongoNamespaceError
-            throw new error_1.MongoRuntimeError(`Cannot parse namespace from "${namespace}"`);
-        }
-        const [db, ...collectionParts] = namespace.split('.');
-        const collection = collectionParts.join('.');
-        return new MongoDBNamespace(db, collection === '' ? undefined : collection);
-    }
-}
-exports.MongoDBNamespace = MongoDBNamespace;
-/**
- * @public
- *
- * A class representing a collection's namespace.  This class enforces (through Typescript) that
- * the `collection` portion of the namespace is defined and should only be
- * used in scenarios where this can be guaranteed.
- */
-class MongoDBCollectionNamespace extends MongoDBNamespace {
-    constructor(db, collection) {
-        super(db, collection);
-        this.collection = collection;
-    }
-    static fromString(namespace) {
-        return super.fromString(namespace);
-    }
-}
-exports.MongoDBCollectionNamespace = MongoDBCollectionNamespace;
-/** @internal */
-function* makeCounter(seed = 0) {
-    let count = seed;
-    while (true) {
-        const newCount = count;
-        count += 1;
-        yield newCount;
-    }
-}
-/**
- * Synchronously Generate a UUIDv4
- * @internal
- */
-function uuidV4() {
-    const result = crypto.randomBytes(16);
-    result[6] = (result[6] & 0x0f) | 0x40;
-    result[8] = (result[8] & 0x3f) | 0x80;
-    return result;
-}
-/**
- * A helper function for determining `maxWireVersion` between legacy and new topology instances
- * @internal
- */
-function maxWireVersion(topologyOrServer) {
-    if (topologyOrServer) {
-        if (topologyOrServer.loadBalanced || topologyOrServer.serverApi?.version) {
-            // Since we do not have a monitor in the load balanced mode,
-            // we assume the load-balanced server is always pointed at the latest mongodb version.
-            // There is a risk that for on-prem deployments
-            // that don't upgrade immediately that this could alert to the
-            // application that a feature is available that is actually not.
-            // We also return the max supported wire version for serverAPI.
-            return constants_1.MAX_SUPPORTED_WIRE_VERSION;
-        }
-        if (topologyOrServer.hello) {
-            return topologyOrServer.hello.maxWireVersion;
-        }
-        if ('lastHello' in topologyOrServer && typeof topologyOrServer.lastHello === 'function') {
-            const lastHello = topologyOrServer.lastHello();
-            if (lastHello) {
-                return lastHello.maxWireVersion;
-            }
-        }
-        if (topologyOrServer.description &&
-            'maxWireVersion' in topologyOrServer.description &&
-            topologyOrServer.description.maxWireVersion != null) {
-            return topologyOrServer.description.maxWireVersion;
-        }
-    }
-    return 0;
-}
-/** @internal */
-function arrayStrictEqual(arr, arr2) {
-    if (!Array.isArray(arr) || !Array.isArray(arr2)) {
-        return false;
-    }
-    return arr.length === arr2.length && arr.every((elt, idx) => elt === arr2[idx]);
-}
-/** @internal */
-function errorStrictEqual(lhs, rhs) {
-    if (lhs === rhs) {
-        return true;
-    }
-    if (!lhs || !rhs) {
-        return lhs === rhs;
-    }
-    if ((lhs == null && rhs != null) || (lhs != null && rhs == null)) {
-        return false;
-    }
-    if (lhs.constructor.name !== rhs.constructor.name) {
-        return false;
-    }
-    if (lhs.message !== rhs.message) {
-        return false;
-    }
-    return true;
-}
-/** @internal */
-function makeStateMachine(stateTable) {
-    return function stateTransition(target, newState) {
-        const legalStates = stateTable[target.s.state];
-        if (legalStates && legalStates.indexOf(newState) < 0) {
-            throw new error_1.MongoRuntimeError(`illegal state transition from [${target.s.state}] => [${newState}], allowed: [${legalStates}]`);
-        }
-        target.emit('stateChanged', target.s.state, newState);
-        target.s.state = newState;
-    };
-}
-/** @internal */
-function now() {
-    const hrtime = process.hrtime();
-    return Math.floor(hrtime[0] * 1000 + hrtime[1] / 1000000);
-}
-/** @internal */
-function calculateDurationInMs(started) {
-    if (typeof started !== 'number') {
-        return -1;
-    }
-    const elapsed = now() - started;
-    return elapsed < 0 ? 0 : elapsed;
-}
-/** @internal */
-function hasAtomicOperators(doc) {
-    if (Array.isArray(doc)) {
-        for (const document of doc) {
-            if (hasAtomicOperators(document)) {
-                return true;
-            }
-        }
-        return false;
-    }
-    const keys = Object.keys(doc);
-    return keys.length > 0 && keys[0][0] === '$';
-}
-function resolveTimeoutOptions(client, options) {
-    const { socketTimeoutMS, serverSelectionTimeoutMS, waitQueueTimeoutMS, timeoutMS } = client.s.options;
-    return { socketTimeoutMS, serverSelectionTimeoutMS, waitQueueTimeoutMS, timeoutMS, ...options };
-}
-/**
- * Merge inherited properties from parent into options, prioritizing values from options,
- * then values from parent.
- *
- * @param parent - An optional owning class of the operation being run. ex. Db/Collection/MongoClient.
- * @param options - The options passed to the operation method.
- *
- * @internal
- */
-function resolveOptions(parent, options) {
-    const result = Object.assign({}, options, (0, bson_1.resolveBSONOptions)(options, parent));
-    const timeoutMS = options?.timeoutMS ?? parent?.timeoutMS;
-    // Users cannot pass a readConcern/writeConcern to operations in a transaction
-    const session = options?.session;
-    if (!session?.inTransaction()) {
-        const readConcern = read_concern_1.ReadConcern.fromOptions(options) ?? parent?.readConcern;
-        if (readConcern) {
-            result.readConcern = readConcern;
-        }
-        let writeConcern = write_concern_1.WriteConcern.fromOptions(options) ?? parent?.writeConcern;
-        if (writeConcern) {
-            if (timeoutMS != null) {
-                writeConcern = write_concern_1.WriteConcern.fromOptions({
-                    writeConcern: {
-                        ...writeConcern,
-                        wtimeout: undefined,
-                        wtimeoutMS: undefined
-                    }
-                });
-            }
-            result.writeConcern = writeConcern;
-        }
-    }
-    result.timeoutMS = timeoutMS;
-    const readPreference = read_preference_1.ReadPreference.fromOptions(options) ?? parent?.readPreference;
-    if (readPreference) {
-        result.readPreference = readPreference;
-    }
-    const isConvenientTransaction = session?.explicit && session?.timeoutContext != null;
-    if (isConvenientTransaction && options?.timeoutMS != null) {
-        throw new error_1.MongoInvalidArgumentError('An operation cannot be given a timeoutMS setting when inside a withTransaction call that has a timeoutMS setting');
-    }
-    return result;
-}
-function isSuperset(set, subset) {
-    set = Array.isArray(set) ? new Set(set) : set;
-    subset = Array.isArray(subset) ? new Set(subset) : subset;
-    for (const elem of subset) {
-        if (!set.has(elem)) {
-            return false;
-        }
-    }
-    return true;
-}
-/**
- * Checks if the document is a Hello request
- * @internal
- */
-function isHello(doc) {
-    return doc[constants_2.LEGACY_HELLO_COMMAND] || doc.hello ? true : false;
-}
-/** Returns the items that are uniquely in setA */
-function setDifference(setA, setB) {
-    const difference = new Set(setA);
-    for (const elem of setB) {
-        difference.delete(elem);
-    }
-    return difference;
-}
-const HAS_OWN = (object, prop) => Object.prototype.hasOwnProperty.call(object, prop);
-function isRecord(value, requiredKeys = undefined) {
-    if (!isObject(value)) {
-        return false;
-    }
-    const ctor = value.constructor;
-    if (ctor && ctor.prototype) {
-        if (!isObject(ctor.prototype)) {
-            return false;
-        }
-        // Check to see if some method exists from the Object exists
-        if (!HAS_OWN(ctor.prototype, 'isPrototypeOf')) {
-            return false;
-        }
-    }
-    if (requiredKeys) {
-        const keys = Object.keys(value);
-        return isSuperset(keys, requiredKeys);
-    }
-    return true;
-}
-/**
- * A sequential list of items in a circularly linked list
- * @remarks
- * The head node is special, it is always defined and has a value of null.
- * It is never "included" in the list, in that, it is not returned by pop/shift or yielded by the iterator.
- * The circular linkage and always defined head node are to reduce checks for null next/prev references to zero.
- * New nodes are declared as object literals with keys always in the same order: next, prev, value.
- * @internal
- */
-class List {
-    get length() {
-        return this.count;
-    }
-    get [Symbol.toStringTag]() {
-        return 'List';
-    }
-    constructor() {
-        this.count = 0;
-        // this is carefully crafted:
-        // declaring a complete and consistently key ordered
-        // object is beneficial to the runtime optimizations
-        this.head = {
-            next: null,
-            prev: null,
-            value: null
-        };
-        this.head.next = this.head;
-        this.head.prev = this.head;
-    }
-    toArray() {
-        return Array.from(this);
-    }
-    toString() {
-        return `head <=> ${this.toArray().join(' <=> ')} <=> head`;
-    }
-    *[Symbol.iterator]() {
-        for (const node of this.nodes()) {
-            yield node.value;
-        }
-    }
-    *nodes() {
-        let ptr = this.head.next;
-        while (ptr !== this.head) {
-            // Save next before yielding so that we make removing within iteration safe
-            const { next } = ptr;
-            yield ptr;
-            ptr = next;
-        }
-    }
-    /** Insert at end of list */
-    push(value) {
-        this.count += 1;
-        const newNode = {
-            next: this.head,
-            prev: this.head.prev,
-            value
-        };
-        this.head.prev.next = newNode;
-        this.head.prev = newNode;
-    }
-    /** Inserts every item inside an iterable instead of the iterable itself */
-    pushMany(iterable) {
-        for (const value of iterable) {
-            this.push(value);
-        }
-    }
-    /** Insert at front of list */
-    unshift(value) {
-        this.count += 1;
-        const newNode = {
-            next: this.head.next,
-            prev: this.head,
-            value
-        };
-        this.head.next.prev = newNode;
-        this.head.next = newNode;
-    }
-    remove(node) {
-        if (node === this.head || this.length === 0) {
-            return null;
-        }
-        this.count -= 1;
-        const prevNode = node.prev;
-        const nextNode = node.next;
-        prevNode.next = nextNode;
-        nextNode.prev = prevNode;
-        return node.value;
-    }
-    /** Removes the first node at the front of the list */
-    shift() {
-        return this.remove(this.head.next);
-    }
-    /** Removes the last node at the end of the list */
-    pop() {
-        return this.remove(this.head.prev);
-    }
-    /** Iterates through the list and removes nodes where filter returns true */
-    prune(filter) {
-        for (const node of this.nodes()) {
-            if (filter(node.value)) {
-                this.remove(node);
-            }
-        }
-    }
-    clear() {
-        this.count = 0;
-        this.head.next = this.head;
-        this.head.prev = this.head;
-    }
-    /** Returns the first item in the list, does not remove */
-    first() {
-        // If the list is empty, value will be the head's null
-        return this.head.next.value;
-    }
-    /** Returns the last item in the list, does not remove */
-    last() {
-        // If the list is empty, value will be the head's null
-        return this.head.prev.value;
-    }
-}
-exports.List = List;
-/**
- * A pool of Buffers which allow you to read them as if they were one
- * @internal
- */
-class BufferPool {
-    constructor() {
-        this.buffers = new List();
-        this.totalByteLength = 0;
-    }
-    get length() {
-        return this.totalByteLength;
-    }
-    /** Adds a buffer to the internal buffer pool list */
-    append(buffer) {
-        this.buffers.push(buffer);
-        this.totalByteLength += buffer.length;
-    }
-    /**
-     * If BufferPool contains 4 bytes or more construct an int32 from the leading bytes,
-     * otherwise return null. Size can be negative, caller should error check.
-     */
-    getInt32() {
-        if (this.totalByteLength < 4) {
-            return null;
-        }
-        const firstBuffer = this.buffers.first();
-        if (firstBuffer != null && firstBuffer.byteLength >= 4) {
-            return firstBuffer.readInt32LE(0);
-        }
-        // Unlikely case: an int32 is split across buffers.
-        // Use read and put the returned buffer back on top
-        const top4Bytes = this.read(4);
-        const value = top4Bytes.readInt32LE(0);
-        // Put it back.
-        this.totalByteLength += 4;
-        this.buffers.unshift(top4Bytes);
-        return value;
-    }
-    /** Reads the requested number of bytes, optionally consuming them */
-    read(size) {
-        if (typeof size !== 'number' || size < 0) {
-            throw new error_1.MongoInvalidArgumentError('Argument "size" must be a non-negative number');
-        }
-        // oversized request returns empty buffer
-        if (size > this.totalByteLength) {
-            return Buffer.alloc(0);
-        }
-        // We know we have enough, we just don't know how it is spread across chunks
-        // TODO(NODE-4732): alloc API should change based on raw option
-        const result = Buffer.allocUnsafe(size);
-        for (let bytesRead = 0; bytesRead < size;) {
-            const buffer = this.buffers.shift();
-            if (buffer == null) {
-                break;
-            }
-            const bytesRemaining = size - bytesRead;
-            const bytesReadable = Math.min(bytesRemaining, buffer.byteLength);
-            const bytes = buffer.subarray(0, bytesReadable);
-            result.set(bytes, bytesRead);
-            bytesRead += bytesReadable;
-            this.totalByteLength -= bytesReadable;
-            if (bytesReadable < buffer.byteLength) {
-                this.buffers.unshift(buffer.subarray(bytesReadable));
-            }
-        }
-        return result;
-    }
-}
-exports.BufferPool = BufferPool;
-/** @public */
-class HostAddress {
-    constructor(hostString) {
-        this.host = undefined;
-        this.port = undefined;
-        this.socketPath = undefined;
-        this.isIPv6 = false;
-        const escapedHost = hostString.split(' ').join('%20'); // escape spaces, for socket path hosts
-        if (escapedHost.endsWith('.sock')) {
-            // heuristically determine if we're working with a domain socket
-            this.socketPath = decodeURIComponent(escapedHost);
-            return;
-        }
-        const urlString = `iLoveJS://${escapedHost}`;
-        let url;
-        try {
-            url = new url_1.URL(urlString);
-        }
-        catch (urlError) {
-            const runtimeError = new error_1.MongoRuntimeError(`Unable to parse ${escapedHost} with URL`);
-            runtimeError.cause = urlError;
-            throw runtimeError;
-        }
-        const hostname = url.hostname;
-        const port = url.port;
-        let normalized = decodeURIComponent(hostname).toLowerCase();
-        if (normalized.startsWith('[') && normalized.endsWith(']')) {
-            this.isIPv6 = true;
-            normalized = normalized.substring(1, hostname.length - 1);
-        }
-        this.host = normalized.toLowerCase();
-        if (typeof port === 'number') {
-            this.port = port;
-        }
-        else if (typeof port === 'string' && port !== '') {
-            this.port = Number.parseInt(port, 10);
-        }
-        else {
-            this.port = 27017;
-        }
-        if (this.port === 0) {
-            throw new error_1.MongoParseError('Invalid port (zero) with hostname');
-        }
-        Object.freeze(this);
-    }
-    [Symbol.for('nodejs.util.inspect.custom')]() {
-        return this.inspect();
-    }
-    inspect() {
-        return `new HostAddress('${this.toString()}')`;
-    }
-    toString() {
-        if (typeof this.host === 'string') {
-            if (this.isIPv6) {
-                return `[${this.host}]:${this.port}`;
-            }
-            return `${this.host}:${this.port}`;
-        }
-        return `${this.socketPath}`;
-    }
-    static fromString(s) {
-        return new HostAddress(s);
-    }
-    static fromHostPort(host, port) {
-        if (host.includes(':')) {
-            host = `[${host}]`; // IPv6 address
-        }
-        return HostAddress.fromString(`${host}:${port}`);
-    }
-    static fromSrvRecord({ name, port }) {
-        return HostAddress.fromHostPort(name, port);
-    }
-    toHostPort() {
-        if (this.socketPath) {
-            return { host: this.socketPath, port: 0 };
-        }
-        const host = this.host ?? '';
-        const port = this.port ?? 0;
-        return { host, port };
-    }
-}
-exports.HostAddress = HostAddress;
-exports.DEFAULT_PK_FACTORY = {
-    // We prefer not to rely on ObjectId having a createPk method
-    createPk() {
-        return new bson_1.ObjectId();
-    }
+
+exports.isNativeObject = function(arg) {
+  return Array.isArray(arg) ||
+    arg instanceof Date ||
+    arg instanceof Boolean ||
+    arg instanceof Number ||
+    arg instanceof String;
 };
+
 /**
- * When the driver used emitWarning the code will be equal to this.
- * @public
+ * Determines if `val` is an object that has no own keys
+ * @param {Any} val
+ */
+
+exports.isEmptyObject = function(val) {
+  return val != null &&
+    typeof val === 'object' &&
+    Object.keys(val).length === 0;
+};
+
+/**
+ * Search if `obj` or any POJOs nested underneath `obj` has a property named
+ * `key`
+ * @param {Object} obj
+ * @param {String} key
+ */
+
+exports.hasKey = function hasKey(obj, key) {
+  const props = Object.keys(obj);
+  for (const prop of props) {
+    if (prop === key) {
+      return true;
+    }
+    if (exports.isPOJO(obj[prop]) && exports.hasKey(obj[prop], key)) {
+      return true;
+    }
+  }
+  return false;
+};
+
+/**
+ * process.nextTick helper.
  *
- * @example
- * ```ts
- * process.on('warning', (warning) => {
- *  if (warning.code === MONGODB_WARNING_CODE) console.error('Ah an important warning! :)')
- * })
- * ```
- */
-exports.MONGODB_WARNING_CODE = 'MONGODB DRIVER';
-/** @internal */
-function emitWarning(message) {
-    return process.emitWarning(message, { code: exports.MONGODB_WARNING_CODE });
-}
-const emittedWarnings = new Set();
-/**
- * Will emit a warning once for the duration of the application.
- * Uses the message to identify if it has already been emitted
- * so using string interpolation can cause multiple emits
- * @internal
- */
-function emitWarningOnce(message) {
-    if (!emittedWarnings.has(message)) {
-        emittedWarnings.add(message);
-        return emitWarning(message);
-    }
-}
-/**
- * Takes a JS object and joins the values into a string separated by ', '
- */
-function enumToString(en) {
-    return Object.values(en).join(', ');
-}
-/**
- * Determine if a server supports retryable writes.
+ * Wraps `callback` in a try/catch + nextTick.
  *
- * @internal
- */
-function supportsRetryableWrites(server) {
-    if (!server) {
-        return false;
-    }
-    if (server.loadBalanced) {
-        // Loadbalanced topologies will always support retry writes
-        return true;
-    }
-    if (server.description.logicalSessionTimeoutMinutes != null) {
-        // that supports sessions
-        if (server.description.type !== common_1.ServerType.Standalone) {
-            // and that is not a standalone
-            return true;
-        }
-    }
-    return false;
-}
-/**
- * Fisher–Yates Shuffle
+ * node-mongodb-native has a habit of state corruption when an error is immediately thrown from within a collection callback.
  *
- * Reference: https://bost.ocks.org/mike/shuffle/
- * @param sequence - items to be shuffled
- * @param limit - Defaults to `0`. If nonzero shuffle will slice the randomized array e.g, `.slice(0, limit)` otherwise will return the entire randomized array.
+ * @param {Function} callback
+ * @api private
  */
-function shuffle(sequence, limit = 0) {
-    const items = Array.from(sequence); // shallow copy in order to never shuffle the input
-    if (limit > items.length) {
-        throw new error_1.MongoRuntimeError('Limit must be less than the number of items');
-    }
-    let remainingItemsToShuffle = items.length;
-    const lowerBound = limit % items.length === 0 ? 1 : items.length - limit;
-    while (remainingItemsToShuffle > lowerBound) {
-        // Pick a remaining element
-        const randomIndex = Math.floor(Math.random() * remainingItemsToShuffle);
-        remainingItemsToShuffle -= 1;
-        // And swap it with the current element
-        const swapHold = items[remainingItemsToShuffle];
-        items[remainingItemsToShuffle] = items[randomIndex];
-        items[randomIndex] = swapHold;
-    }
-    return limit % items.length === 0 ? items : items.slice(lowerBound);
-}
-/**
- * TODO(NODE-4936): read concern eligibility for commands should be codified in command construction
- * @internal
- * @see https://github.com/mongodb/specifications/blob/master/source/read-write-concern/read-write-concern.md#read-concern
- */
-function commandSupportsReadConcern(command) {
-    if (command.aggregate || command.count || command.distinct || command.find || command.geoNear) {
-        return true;
-    }
-    return false;
-}
-/**
- * Compare objectIds. `null` is always less
- * - `+1 = oid1 is greater than oid2`
- * - `-1 = oid1 is less than oid2`
- * - `+0 = oid1 is equal oid2`
- */
-function compareObjectId(oid1, oid2) {
-    if (oid1 == null && oid2 == null) {
-        return 0;
-    }
-    if (oid1 == null) {
-        return -1;
-    }
-    if (oid2 == null) {
-        return 1;
-    }
-    return exports.ByteUtils.compare(oid1.id, oid2.id);
-}
-function parseInteger(value) {
-    if (typeof value === 'number')
-        return Math.trunc(value);
-    const parsedValue = Number.parseInt(String(value), 10);
-    return Number.isNaN(parsedValue) ? null : parsedValue;
-}
-function parseUnsignedInteger(value) {
-    const parsedInt = parseInteger(value);
-    return parsedInt != null && parsedInt >= 0 ? parsedInt : null;
-}
-/**
- * This function throws a MongoAPIError in the event that either of the following is true:
- * * If the provided address domain does not match the provided parent domain
- * * If the parent domain contains less than three `.` separated parts and the provided address does not contain at least one more domain level than its parent
- *
- * If a DNS server were to become compromised SRV records would still need to
- * advertise addresses that are under the same domain as the srvHost.
- *
- * @param address - The address to check against a domain
- * @param srvHost - The domain to check the provided address against
- * @returns void
- */
-function checkParentDomainMatch(address, srvHost) {
-    // Remove trailing dot if exists on either the resolved address or the srv hostname
-    const normalizedAddress = address.endsWith('.') ? address.slice(0, address.length - 1) : address;
-    const normalizedSrvHost = srvHost.endsWith('.') ? srvHost.slice(0, srvHost.length - 1) : srvHost;
-    const allCharacterBeforeFirstDot = /^.*?\./;
-    const srvIsLessThanThreeParts = normalizedSrvHost.split('.').length < 3;
-    // Remove all characters before first dot
-    // Add leading dot back to string so
-    //   an srvHostDomain = '.trusted.site'
-    //   will not satisfy an addressDomain that endsWith '.fake-trusted.site'
-    const addressDomain = `.${normalizedAddress.replace(allCharacterBeforeFirstDot, '')}`;
-    let srvHostDomain = srvIsLessThanThreeParts
-        ? normalizedSrvHost
-        : `.${normalizedSrvHost.replace(allCharacterBeforeFirstDot, '')}`;
-    if (!srvHostDomain.startsWith('.')) {
-        srvHostDomain = '.' + srvHostDomain;
-    }
-    if (srvIsLessThanThreeParts &&
-        normalizedAddress.split('.').length <= normalizedSrvHost.split('.').length) {
-        throw new error_1.MongoAPIError('Server record does not have at least one more domain level than parent URI');
-    }
-    if (!addressDomain.endsWith(srvHostDomain)) {
-        throw new error_1.MongoAPIError('Server record does not share hostname with parent URI');
-    }
-}
-/**
- * Perform a get request that returns status and body.
- * @internal
- */
-function get(url, options = {}) {
-    return new Promise((resolve, reject) => {
-        /* eslint-disable prefer-const */
-        let timeoutId;
-        const request = http
-            .get(url, options, response => {
-            response.setEncoding('utf8');
-            let body = '';
-            response.on('data', chunk => (body += chunk));
-            response.on('end', () => {
-                (0, timers_1.clearTimeout)(timeoutId);
-                resolve({ status: response.statusCode, body });
-            });
-        })
-            .on('error', error => {
-            (0, timers_1.clearTimeout)(timeoutId);
-            reject(error);
-        })
-            .end();
-        timeoutId = (0, timers_1.setTimeout)(() => {
-            request.destroy(new error_1.MongoNetworkTimeoutError(`request timed out after 10 seconds`));
-        }, 10000);
-    });
-}
-async function request(uri, options = {}) {
-    return await new Promise((resolve, reject) => {
-        const requestOptions = {
-            method: 'GET',
-            timeout: 10000,
-            json: true,
-            ...url.parse(uri),
-            ...options
-        };
-        const req = http.request(requestOptions, res => {
-            res.setEncoding('utf8');
-            let data = '';
-            res.on('data', d => {
-                data += d;
-            });
-            res.once('end', () => {
-                if (options.json === false) {
-                    resolve(data);
-                    return;
-                }
-                try {
-                    const parsed = JSON.parse(data);
-                    resolve(parsed);
-                }
-                catch {
-                    // TODO(NODE-3483)
-                    reject(new error_1.MongoRuntimeError(`Invalid JSON response: "${data}"`));
-                }
-            });
-        });
-        req.once('timeout', () => req.destroy(new error_1.MongoNetworkTimeoutError(`Network request to ${uri} timed out after ${options.timeout} ms`)));
-        req.once('error', error => reject(error));
-        req.end();
-    });
-}
-/** @internal */
-exports.DOCUMENT_DB_CHECK = /(\.docdb\.amazonaws\.com$)|(\.docdb-elastic\.amazonaws\.com$)/;
-/** @internal */
-exports.COSMOS_DB_CHECK = /\.cosmos\.azure\.com$/;
-/** @internal */
-exports.DOCUMENT_DB_MSG = 'You appear to be connected to a DocumentDB cluster. For more information regarding feature compatibility and support please visit https://www.mongodb.com/supportability/documentdb';
-/** @internal */
-exports.COSMOS_DB_MSG = 'You appear to be connected to a CosmosDB cluster. For more information regarding feature compatibility and support please visit https://www.mongodb.com/supportability/cosmosdb';
-/** @internal */
-function isHostMatch(match, host) {
-    return host && match.test(host.toLowerCase()) ? true : false;
-}
-function promiseWithResolvers() {
-    let resolve;
-    let reject;
-    const promise = new Promise(function withResolversExecutor(promiseResolve, promiseReject) {
-        resolve = promiseResolve;
-        reject = promiseReject;
-    });
-    return { promise, resolve, reject };
-}
-/**
- * A noop function intended for use in preventing unhandled rejections.
- *
- * @example
- * ```js
- * const promise = myAsyncTask();
- * // eslint-disable-next-line github/no-then
- * promise.then(undefined, squashError);
- * ```
- */
-function squashError(_error) {
+
+exports.tick = function tick(callback) {
+  if (typeof callback !== 'function') {
     return;
-}
-exports.randomBytes = (0, util_1.promisify)(crypto.randomBytes);
-/**
- * Replicates the events.once helper.
- *
- * Removes unused signal logic and It **only** supports 0 or 1 argument events.
- *
- * @param ee - An event emitter that may emit `ev`
- * @param name - An event name to wait for
- */
-async function once(ee, name, options) {
-    options?.signal?.throwIfAborted();
-    const { promise, resolve, reject } = promiseWithResolvers();
-    const onEvent = (data) => resolve(data);
-    const onError = (error) => reject(error);
-    const abortListener = addAbortListener(options?.signal, function () {
-        reject(this.reason);
-    });
-    ee.once(name, onEvent).once('error', onError);
+  }
+  return function() {
     try {
-        return await promise;
+      callback.apply(this, arguments);
+    } catch (err) {
+      // only nextTick on err to get out of
+      // the event loop and avoid state corruption.
+      immediate(function() {
+        throw err;
+      });
     }
-    finally {
-        ee.off(name, onEvent);
-        ee.off('error', onError);
-        abortListener?.[exports.kDispose]();
+  };
+};
+
+/**
+ * Returns true if `v` is an object that can be serialized as a primitive in
+ * MongoDB
+ * @param {Any} v
+ */
+
+exports.isMongooseType = function(v) {
+  return isBsonType(v, 'ObjectId') || isBsonType(v, 'Decimal128') || v instanceof Buffer;
+};
+
+exports.isMongooseObject = isMongooseObject;
+
+/**
+ * Converts `expires` options of index objects to `expiresAfterSeconds` options for MongoDB.
+ *
+ * @param {Object} object
+ * @api private
+ */
+
+exports.expires = function expires(object) {
+  if (!(object && object.constructor.name === 'Object')) {
+    return;
+  }
+  if (!('expires' in object)) {
+    return;
+  }
+
+  object.expireAfterSeconds = (typeof object.expires !== 'string')
+    ? object.expires
+    : Math.round(ms(object.expires) / 1000);
+  delete object.expires;
+};
+
+/**
+ * populate helper
+ * @param {String} path
+ * @param {String} select
+ * @param {Model} model
+ * @param {Object} match
+ * @param {Object} options
+ * @param {Any} subPopulate
+ * @param {Boolean} justOne
+ * @param {Boolean} count
+ */
+
+exports.populate = function populate(path, select, model, match, options, subPopulate, justOne, count) {
+  // might have passed an object specifying all arguments
+  let obj = null;
+  if (arguments.length === 1) {
+    if (path instanceof PopulateOptions) {
+      // If reusing old populate docs, avoid reusing `_docs` because that may
+      // lead to bugs and memory leaks. See gh-11641
+      path._docs = {};
+      path._childDocs = [];
+      return [path];
     }
-}
-function maybeAddIdToDocuments(coll, docOrDocs, options) {
-    const forceServerObjectId = typeof options.forceServerObjectId === 'boolean'
-        ? options.forceServerObjectId
-        : coll.s.db.options?.forceServerObjectId;
-    // no need to modify the docs if server sets the ObjectId
-    if (forceServerObjectId === true) {
-        return docOrDocs;
+
+    if (Array.isArray(path)) {
+      const singles = makeSingles(path);
+      return singles.map(o => exports.populate(o)[0]);
     }
-    const transform = (doc) => {
-        if (doc._id == null) {
-            doc._id = coll.s.pkFactory.createPk();
-        }
-        return doc;
+
+    if (exports.isObject(path)) {
+      obj = Object.assign({}, path);
+    } else {
+      obj = { path: path };
+    }
+  } else if (typeof model === 'object') {
+    obj = {
+      path: path,
+      select: select,
+      match: model,
+      options: match
     };
-    return Array.isArray(docOrDocs) ? docOrDocs.map(transform) : transform(docOrDocs);
-}
-async function fileIsAccessible(fileName, mode) {
-    try {
-        await fs_1.promises.access(fileName, mode);
-        return true;
-    }
-    catch {
-        return false;
-    }
-}
-function csotMin(duration1, duration2) {
-    if (duration1 === 0)
-        return duration2;
-    if (duration2 === 0)
-        return duration1;
-    return Math.min(duration1, duration2);
-}
-function noop() {
-    return;
-}
-/**
- * Recurse through the (identically-shaped) `decrypted` and `original`
- * objects and attach a `decryptedKeys` property on each sub-object that
- * contained encrypted fields. Because we only call this on BSON responses,
- * we do not need to worry about circular references.
- *
- * @internal
- */
-function decorateDecryptionResult(decrypted, original, isTopLevelDecorateCall = true) {
-    if (isTopLevelDecorateCall) {
-        // The original value could have been either a JS object or a BSON buffer
-        if (Buffer.isBuffer(original)) {
-            original = (0, bson_1.deserialize)(original);
-        }
-        if (Buffer.isBuffer(decrypted)) {
-            throw new error_1.MongoRuntimeError('Expected result of decryption to be deserialized BSON object');
-        }
-    }
-    if (!decrypted || typeof decrypted !== 'object')
-        return;
-    for (const k of Object.keys(decrypted)) {
-        const originalValue = original[k];
-        // An object was decrypted by libmongocrypt if and only if it was
-        // a BSON Binary object with subtype 6.
-        if (originalValue && originalValue._bsontype === 'Binary' && originalValue.sub_type === 6) {
-            if (!decrypted[constants_2.kDecoratedKeys]) {
-                Object.defineProperty(decrypted, constants_2.kDecoratedKeys, {
-                    value: [],
-                    configurable: true,
-                    enumerable: false,
-                    writable: false
-                });
-            }
-            // this is defined in the preceding if-statement
-            // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-            decrypted[constants_2.kDecoratedKeys].push(k);
-            // Do not recurse into this decrypted value. It could be a sub-document/array,
-            // in which case there is no original value associated with its subfields.
-            continue;
-        }
-        decorateDecryptionResult(decrypted[k], originalValue, false);
-    }
-}
-/** @internal */
-exports.kDispose = Symbol.dispose ?? Symbol('dispose');
-/**
- * A utility that helps with writing listener code idiomatically
- *
- * @example
- * ```js
- * using listener = addAbortListener(signal, function () {
- *   console.log('aborted', this.reason);
- * });
- * ```
- *
- * @param signal - if exists adds an abort listener
- * @param listener - the listener to be added to signal
- * @returns A disposable that will remove the abort listener
- */
-function addAbortListener(signal, listener) {
-    if (signal == null)
-        return;
-    signal.addEventListener('abort', listener, { once: true });
-    return { [exports.kDispose]: () => signal.removeEventListener('abort', listener) };
-}
-/**
- * Takes a promise and races it with a promise wrapping the abort event of the optionally provided signal.
- * The given promise is _always_ ordered before the signal's abort promise.
- * When given an already rejected promise and an already aborted signal, the promise's rejection takes precedence.
- *
- * Any asynchronous processing in `promise` will continue even after the abort signal has fired,
- * but control will be returned to the caller
- *
- * @see https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise/race
- *
- * @param promise - A promise to discard if the signal aborts
- * @param options - An options object carrying an optional signal
- */
-async function abortable(promise, { signal }) {
-    if (signal == null) {
-        return await promise;
-    }
-    const { promise: aborted, reject } = promiseWithResolvers();
-    const abortListener = signal.aborted
-        ? reject(signal.reason)
-        : addAbortListener(signal, function () {
-            reject(this.reason);
+  } else {
+    obj = {
+      path: path,
+      select: select,
+      model: model,
+      match: match,
+      options: options,
+      populate: subPopulate,
+      justOne: justOne,
+      count: count
+    };
+  }
+
+  if (typeof obj.path !== 'string' && !(Array.isArray(obj.path) && obj.path.every(el => typeof el === 'string'))) {
+    throw new TypeError('utils.populate: invalid path. Expected string or array of strings. Got typeof `' + typeof path + '`');
+  }
+
+  return _populateObj(obj);
+
+  // The order of select/conditions args is opposite Model.find but
+  // necessary to keep backward compatibility (select could be
+  // an array, string, or object literal).
+  function makeSingles(arr) {
+    const ret = [];
+    arr.forEach(function(obj) {
+      if (oneSpaceRE.test(obj.path)) {
+        const paths = obj.path.split(manySpaceRE);
+        paths.forEach(function(p) {
+          const copy = Object.assign({}, obj);
+          copy.path = p;
+          ret.push(copy);
         });
-    try {
-        return await Promise.race([promise, aborted]);
-    }
-    finally {
-        abortListener?.[exports.kDispose]();
-    }
+      } else {
+        ret.push(obj);
+      }
+    });
+
+    return ret;
+  }
+};
+
+function _populateObj(obj) {
+  if (Array.isArray(obj.populate)) {
+    const ret = [];
+    obj.populate.forEach(function(obj) {
+      if (oneSpaceRE.test(obj.path)) {
+        const copy = Object.assign({}, obj);
+        const paths = copy.path.split(manySpaceRE);
+        paths.forEach(function(p) {
+          copy.path = p;
+          ret.push(exports.populate(copy)[0]);
+        });
+      } else {
+        ret.push(exports.populate(obj)[0]);
+      }
+    });
+    obj.populate = exports.populate(ret);
+  } else if (obj.populate != null && typeof obj.populate === 'object') {
+    obj.populate = exports.populate(obj.populate);
+  }
+
+  const ret = [];
+  const paths = oneSpaceRE.test(obj.path)
+    ? obj.path.split(manySpaceRE)
+    : Array.isArray(obj.path)
+      ? obj.path
+      : [obj.path];
+  if (obj.options != null) {
+    obj.options = clone(obj.options);
+  }
+
+  for (const path of paths) {
+    ret.push(new PopulateOptions(Object.assign({}, obj, { path: path })));
+  }
+
+  return ret;
 }
-//# sourceMappingURL=utils.js.map
+
+/**
+ * Return the value of `obj` at the given `path`.
+ *
+ * @param {String} path
+ * @param {Object} obj
+ * @param {Any} map
+ */
+
+exports.getValue = function(path, obj, map) {
+  return mpath.get(path, obj, getValueLookup, map);
+};
+
+/*!
+ * ignore
+ */
+
+const mapGetterOptions = Object.freeze({ getters: false });
+
+function getValueLookup(obj, part) {
+  if (part === '$*' && obj instanceof Map) {
+    return obj;
+  }
+  let _from = obj?._doc || obj;
+  if (_from != null && _from.isMongooseArrayProxy) {
+    _from = _from.__array;
+  }
+  return _from instanceof Map ?
+    _from.get(part, mapGetterOptions) :
+    _from[part];
+}
+
+/**
+ * Sets the value of `obj` at the given `path`.
+ *
+ * @param {String} path
+ * @param {Anything} val
+ * @param {Object} obj
+ * @param {Any} map
+ * @param {Any} _copying
+ */
+
+exports.setValue = function(path, val, obj, map, _copying) {
+  mpath.set(path, val, obj, '_doc', map, _copying);
+};
+
+/**
+ * Returns an array of values from object `o`.
+ *
+ * @param {Object} o
+ * @return {Array}
+ * @api private
+ */
+
+exports.object = {};
+exports.object.vals = function vals(o) {
+  const keys = Object.keys(o);
+  let i = keys.length;
+  const ret = [];
+
+  while (i--) {
+    ret.push(o[keys[i]]);
+  }
+
+  return ret;
+};
+
+const hop = Object.prototype.hasOwnProperty;
+
+/**
+ * Safer helper for hasOwnProperty checks
+ *
+ * @param {Object} obj
+ * @param {String} prop
+ */
+
+exports.object.hasOwnProperty = function(obj, prop) {
+  return hop.call(obj, prop);
+};
+
+/**
+ * Determine if `val` is null or undefined
+ *
+ * @param {Any} val
+ * @return {Boolean}
+ */
+
+exports.isNullOrUndefined = function(val) {
+  return val === null || val === undefined;
+};
+
+/*!
+ * ignore
+ */
+
+exports.array = {};
+
+/**
+ * Flattens an array.
+ *
+ * [ 1, [ 2, 3, [4] ]] -> [1,2,3,4]
+ *
+ * @param {Array} arr
+ * @param {Function} [filter] If passed, will be invoked with each item in the array. If `filter` returns a falsy value, the item will not be included in the results.
+ * @param {Array} ret
+ * @return {Array}
+ * @api private
+ */
+
+exports.array.flatten = function flatten(arr, filter, ret) {
+  ret || (ret = []);
+
+  arr.forEach(function(item) {
+    if (Array.isArray(item)) {
+      flatten(item, filter, ret);
+    } else {
+      if (!filter || filter(item)) {
+        ret.push(item);
+      }
+    }
+  });
+
+  return ret;
+};
+
+/*!
+ * ignore
+ */
+
+const _hasOwnProperty = Object.prototype.hasOwnProperty;
+
+exports.hasUserDefinedProperty = function(obj, key) {
+  if (obj == null) {
+    return false;
+  }
+
+  if (Array.isArray(key)) {
+    for (const k of key) {
+      if (exports.hasUserDefinedProperty(obj, k)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  if (_hasOwnProperty.call(obj, key)) {
+    return true;
+  }
+  if (typeof obj === 'object' && key in obj) {
+    const v = obj[key];
+    return v !== Object.prototype[key] && v !== Array.prototype[key];
+  }
+
+  return false;
+};
+
+/*!
+ * ignore
+ */
+
+const MAX_ARRAY_INDEX = Math.pow(2, 32) - 1;
+
+exports.isArrayIndex = function(val) {
+  if (typeof val === 'number') {
+    return val >= 0 && val <= MAX_ARRAY_INDEX;
+  }
+  if (typeof val === 'string') {
+    if (!/^\d+$/.test(val)) {
+      return false;
+    }
+    val = +val;
+    return val >= 0 && val <= MAX_ARRAY_INDEX;
+  }
+
+  return false;
+};
+
+/**
+ * Removes duplicate values from an array
+ *
+ * [1, 2, 3, 3, 5] => [1, 2, 3, 5]
+ * [ ObjectId("550988ba0c19d57f697dc45e"), ObjectId("550988ba0c19d57f697dc45e") ]
+ *    => [ObjectId("550988ba0c19d57f697dc45e")]
+ *
+ * @param {Array} arr
+ * @return {Array}
+ * @api private
+ */
+
+exports.array.unique = function(arr) {
+  const primitives = new Set();
+  const ids = new Set();
+  const ret = [];
+
+  for (const item of arr) {
+    if (typeof item === 'number' || typeof item === 'string' || item == null) {
+      if (primitives.has(item)) {
+        continue;
+      }
+      ret.push(item);
+      primitives.add(item);
+    } else if (isBsonType(item, 'ObjectId')) {
+      if (ids.has(item.toString())) {
+        continue;
+      }
+      ret.push(item);
+      ids.add(item.toString());
+    } else {
+      ret.push(item);
+    }
+  }
+
+  return ret;
+};
+
+exports.buffer = {};
+
+/**
+ * Determines if two buffers are equal.
+ *
+ * @param {Buffer} a
+ * @param {Object} b
+ */
+
+exports.buffer.areEqual = function(a, b) {
+  if (!Buffer.isBuffer(a)) {
+    return false;
+  }
+  if (!Buffer.isBuffer(b)) {
+    return false;
+  }
+  if (a.length !== b.length) {
+    return false;
+  }
+  for (let i = 0, len = a.length; i < len; ++i) {
+    if (a[i] !== b[i]) {
+      return false;
+    }
+  }
+  return true;
+};
+
+exports.getFunctionName = getFunctionName;
+
+/**
+ * Decorate buffers
+ * @param {Object} destination
+ * @param {Object} source
+ */
+
+exports.decorate = function(destination, source) {
+  for (const key in source) {
+    if (specialProperties.has(key)) {
+      continue;
+    }
+    destination[key] = source[key];
+  }
+};
+
+/**
+ * merges to with a copy of from
+ *
+ * @param {Object} to
+ * @param {Object} fromObj
+ * @api private
+ */
+
+exports.mergeClone = function(to, fromObj) {
+  if (isMongooseObject(fromObj)) {
+    fromObj = fromObj.toObject({
+      transform: false,
+      virtuals: false,
+      depopulate: true,
+      getters: false,
+      flattenDecimals: false
+    });
+  }
+  const keys = Object.keys(fromObj);
+  const len = keys.length;
+  let i = 0;
+  let key;
+
+  while (i < len) {
+    key = keys[i++];
+    if (specialProperties.has(key)) {
+      continue;
+    }
+    if (typeof to[key] === 'undefined') {
+      to[key] = clone(fromObj[key], {
+        transform: false,
+        virtuals: false,
+        depopulate: true,
+        getters: false,
+        flattenDecimals: false
+      });
+    } else {
+      let val = fromObj[key];
+      if (val != null && val.valueOf && !(val instanceof Date)) {
+        val = val.valueOf();
+      }
+      if (exports.isObject(val)) {
+        let obj = val;
+        if (isMongooseObject(val) && !val.isMongooseBuffer) {
+          obj = obj.toObject({
+            transform: false,
+            virtuals: false,
+            depopulate: true,
+            getters: false,
+            flattenDecimals: false
+          });
+        }
+        if (val.isMongooseBuffer) {
+          obj = Buffer.from(obj);
+        }
+        exports.mergeClone(to[key], obj);
+      } else {
+        to[key] = clone(val, {
+          flattenDecimals: false
+        });
+      }
+    }
+  }
+};
+
+/**
+ * Executes a function on each element of an array (like _.each)
+ *
+ * @param {Array} arr
+ * @param {Function} fn
+ * @api private
+ */
+
+exports.each = function(arr, fn) {
+  for (const item of arr) {
+    fn(item);
+  }
+};
+
+/**
+ * Rename an object key, while preserving its position in the object
+ *
+ * @param {Object} oldObj
+ * @param {String|Number} oldKey
+ * @param {String|Number} newKey
+ * @api private
+ */
+exports.renameObjKey = function(oldObj, oldKey, newKey) {
+  const keys = Object.keys(oldObj);
+  return keys.reduce(
+    (acc, val) => {
+      if (val === oldKey) {
+        acc[newKey] = oldObj[oldKey];
+      } else {
+        acc[val] = oldObj[val];
+      }
+      return acc;
+    },
+    {}
+  );
+};
+
+/*!
+ * ignore
+ */
+
+exports.getOption = function(name) {
+  const sources = Array.prototype.slice.call(arguments, 1);
+
+  for (const source of sources) {
+    if (source == null) {
+      continue;
+    }
+    if (source[name] != null) {
+      return source[name];
+    }
+  }
+
+  return null;
+};
+
+/*!
+ * ignore
+ */
+
+exports.noop = function() {};
+
+exports.errorToPOJO = function errorToPOJO(error) {
+  const isError = error instanceof Error;
+  if (!isError) {
+    throw new Error('`error` must be `instanceof Error`.');
+  }
+
+  const ret = {};
+  for (const properyName of Object.getOwnPropertyNames(error)) {
+    ret[properyName] = error[properyName];
+  }
+  return ret;
+};
+
+/*!
+ * ignore
+ */
+
+exports.warn = function warn(message) {
+  return process.emitWarning(message, { code: 'MONGOOSE' });
+};
+
+
+exports.injectTimestampsOption = function injectTimestampsOption(writeOperation, timestampsOption) {
+  if (timestampsOption == null) {
+    return;
+  }
+  writeOperation.timestamps = timestampsOption;
+};
